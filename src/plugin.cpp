@@ -1,11 +1,17 @@
 #include "logger.h"
-
+#include "Events.h"
+#include "Settings.h"
 void OnMessage(SKSE::MessagingInterface::Message* message) {
     if (message->type == SKSE::MessagingInterface::kDataLoaded) {
-        // Start
+        Sink::MenuWatcher::GetSingleton()->Register();
+        Sink::UpdateRegisteredHotkeys();
+        OARConverterUI::Register();
     }
     if (message->type == SKSE::MessagingInterface::kNewGame || message->type == SKSE::MessagingInterface::kPostLoadGame) {
-        // Post-load
+        if (auto* inputDeviceManager = RE::BSInputDeviceManager::GetSingleton()) {
+            inputDeviceManager->AddEventSink(Sink::InputListener::GetSingleton());
+            SKSE::log::info("Listener de input registrado com sucesso!");
+        }
     }
 }
 
