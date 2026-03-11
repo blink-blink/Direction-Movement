@@ -2,16 +2,27 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 // RapidJSON headers
 #include <rapidjson/document.h>
 #include <rapidjson/istreamwrapper.h>
 #include <rapidjson/ostreamwrapper.h>
 #include <rapidjson/prettywriter.h>
+#include <rapidjson/stringbuffer.h> 
+
+// Miniz (Zip)
+#include <miniz.h>
 
 namespace OARConverterUI {
 
     namespace fs = std::filesystem;
+
+    // Estrutura para segurar o conteúdo do arquivo na memória antes de exportar
+    struct ConvertedFile {
+        fs::path originalPath;
+        std::string modifiedContent;
+    };
 
     std::wstring ToLowerW(std::wstring s) {
         std::transform(s.begin(), s.end(), s.begin(), ::towlower);
@@ -177,8 +188,8 @@ namespace OARConverterUI {
         }
     }
 
-    // 5. Processamento do arquivo OAR
-    void ProcessOARJson(const fs::path& filepath, int& totalFilesModified, int& totalConditionsModified, int& totalScanned) {
+    // 5. Processamento do arquivo OAR (Agora armazena na memória antes de escrever no disco)
+    void ProcessOARJson(const fs::path& filepath, int& totalFilesModified, int& totalConditionsModified, int& totalScanned, std::vector<ConvertedFile>& modifiedFilesList, bool exportToZip) {
         std::string logPath = PathToLogString(filepath);
         totalScanned++; // Incrementa contador de arquivos lidos
 
@@ -198,25 +209,38 @@ namespace OARConverterUI {
             TraverseAndReplace(doc, doc.GetAllocator(), modifiedInThisFile, true);
 
             if (modifiedInThisFile > 0) {
-                std::ofstream ofs(filepath);
-                if (ofs.is_open()) {
-                    rapidjson::OStreamWrapper osw(ofs);
-                    rapidjson::PrettyWriter<rapidjson::OStreamWrapper> writer(osw);
-                    doc.Accept(writer);
-                    ofs.close();
 
-                    totalFilesModified++;
-                    totalConditionsModified += modifiedInThisFile;
-                    SKSE::log::info("Sucesso! Atualizado: {} ({} condicoes alteradas)", logPath, modifiedInThisFile);
+                // Grava o JSON modificado em uma string na memória
+                rapidjson::StringBuffer buffer;
+                rapidjson::PrettyWriter<rapidjson::StringBuffer> writer(buffer);
+                doc.Accept(writer);
+                std::string modifiedJsonString = buffer.GetString();
+
+                // SE NÃO FOR EXPORTAR PARA ZIP, SOBRESCREVE O ARQUIVO ORIGINAL
+                if (!exportToZip) {
+                    std::ofstream ofs(filepath);
+                    if (ofs.is_open()) {
+                        ofs << modifiedJsonString;
+                        ofs.close();
+                    }
                 }
+
+                totalFilesModified++;
+                totalConditionsModified += modifiedInThisFile;
+
+                // Adiciona na nossa lista de arquivos (com o conteúdo) para a criação do ZIP
+                modifiedFilesList.push_back({ filepath, modifiedJsonString });
+
+                SKSE::log::info("Sucesso! Processado: {} ({} condicoes alteradas)", logPath, modifiedInThisFile);
             }
         }
         catch (const std::exception& e) {
             SKSE::log::error("Erro no arquivo [{}]: {}", logPath, e.what());
         }
     }
-    // 3. Varredura de pastas Atualizada (Busca Case-Insensitive em QUALQUER pasta dentro de meshes)
-    void RunConversionProcess() {
+
+    // 6. Varredura de pastas Atualizada (Recebe a flag 'exportToZip')
+    void RunConversionProcess(std::vector<ConvertedFile>& modifiedFilesList, bool exportToZip) {
         SKSE::log::info("Iniciando escaneamento para conversao de condicoes OAR...");
         try {
             fs::path startPath = "Data/meshes";
@@ -238,14 +262,14 @@ namespace OARConverterUI {
                     // Modificação: Removida a trava da pasta "openanimationreplacer"
                     // Agora varre qualquer config.json ou user.json encontrado
                     if (filename == L"config.json" || filename == L"user.json") {
-                        ProcessOARJson(entry.path(), totalFiles, totalConditions, totalScanned);
+                        ProcessOARJson(entry.path(), totalFiles, totalConditions, totalScanned, modifiedFilesList, exportToZip);
                     }
                 }
             }
 
             SKSE::log::info("=== CONVERSAO OAR CONCLUIDA ===");
             SKSE::log::info("Arquivos config/user.json lidos: {}", totalScanned);
-            SKSE::log::info("Arquivos modificados: {}", totalFiles);
+            SKSE::log::info("Arquivos processados: {}", totalFiles);
             SKSE::log::info("Condicoes substituidas: {}", totalConditions);
         }
         catch (const std::filesystem::filesystem_error& e) {
@@ -256,10 +280,52 @@ namespace OARConverterUI {
         }
     }
 
+    // 7. Salva os arquivos modificados em um ZIP (Escrevendo direto da memória para o ZIP)
+    void ExportConvertedFilesToZip(const std::vector<ConvertedFile>& convertedFiles) {
+        if (convertedFiles.empty()) {
+            return;
+        }
+
+        fs::path exportDir = "Data/export";
+        fs::create_directories(exportDir); // Garante que a pasta existe
+
+        std::string zipPath = (exportDir / "DirectionalConverted.zip").string();
+
+        mz_zip_archive zip_archive;
+        memset(&zip_archive, 0, sizeof(zip_archive));
+
+        if (!mz_zip_writer_init_file(&zip_archive, zipPath.c_str(), 0)) {
+            SKSE::log::error("Export OAR: Falha ao inicializar arquivo ZIP em {}", zipPath);
+            return;
+        }
+
+        for (const auto& file : convertedFiles) {
+            std::string sourcePath = file.originalPath.string();
+
+            // O arquivo já deve ter um path como "Data\meshes\...", ajustamos apenas as barras
+            std::string internalZipPath = sourcePath;
+            std::replace(internalZipPath.begin(), internalZipPath.end(), '\\', '/');
+
+            // USANDO mz_zip_writer_add_mem PARA LER A STRING DA MEMÓRIA DIRETO PARA O ZIP
+            if (!mz_zip_writer_add_mem(&zip_archive, internalZipPath.c_str(), file.modifiedContent.data(), file.modifiedContent.size(), MZ_BEST_COMPRESSION)) {
+                SKSE::log::error("Export OAR: Falha ao adicionar arquivo {} ao ZIP", internalZipPath);
+            }
+            else {
+                SKSE::log::info("Export OAR: Adicionado ao ZIP: {}", internalZipPath);
+            }
+        }
+
+        mz_zip_writer_finalize_archive(&zip_archive);
+        mz_zip_writer_end(&zip_archive);
+
+        SKSE::log::info("Exportacao OAR concluida com sucesso para: {}", zipPath);
+    }
+
     // --- RENDERIZAÇÃO DA UI NO SKSE MENU FRAMEWORK ---
     void RenderMenu() {
         static bool showConfirmPopup = false;
         static bool showSuccessMessage = false;
+        static bool exportToZip = true; // Opção adicionada e ativa por padrão
 
         ImGuiMCP::Text("OAR Conditions Converter");
         ImGuiMCP::Separator();
@@ -267,6 +333,10 @@ namespace OARConverterUI {
 
         ImGuiMCP::TextWrapped("It finds Dtry conditions (Keytrace.esp directional magic effects)");
         ImGuiMCP::TextWrapped("and replaces them with the new DirecionalCycleMoveset Graph Variable.");
+        ImGuiMCP::Spacing();
+
+        // Checkbox para o usuário decidir se vai exportar também para ZIP
+        ImGuiMCP::Checkbox("Export converted files to ZIP (Do NOT touch original files)", &exportToZip);
         ImGuiMCP::Spacing();
 
         if (ImGuiMCP::Button("Converter Dtry conditions", { 250, 40 })) {
@@ -277,6 +347,9 @@ namespace OARConverterUI {
         if (showSuccessMessage) {
             ImGuiMCP::Spacing();
             ImGuiMCP::TextColored({ 0.4f, 1.0f, 0.4f, 1.0f }, "Conversion completed successfully! Check SKSE logs for details.");
+            if (exportToZip) {
+                ImGuiMCP::TextColored({ 0.4f, 1.0f, 0.4f, 1.0f }, "Zip created at Data/export/OAR_Converted_Export.zip (Original files untouched)");
+            }
         }
 
         // --- LÓGICA DO POPUP DE CONFIRMAÇÃO ---
@@ -286,16 +359,33 @@ namespace OARConverterUI {
 
         // Centraliza o popup
         if (ImGuiMCP::BeginPopupModal("Confirm Conversion", nullptr, ImGuiMCP::ImGuiWindowFlags_AlwaysAutoResize)) {
-            ImGuiMCP::Text("Are you sure you want to convert the conditions?");
-            ImGuiMCP::Text("This change is permanently.");
+
+            if (exportToZip) {
+                ImGuiMCP::Text("Are you sure you want to extract the conditions?");
+                ImGuiMCP::Text("Original files will NOT be modified. A ZIP file will be created.");
+            }
+            else {
+                ImGuiMCP::Text("Are you sure you want to convert the conditions?");
+                ImGuiMCP::Text("This change is permanent. Your original files WILL BE MODIFIED.");
+            }
+
             ImGuiMCP::Text("You will need restart the game after finished");
             ImGuiMCP::Spacing();
             ImGuiMCP::Separator();
             ImGuiMCP::Spacing();
 
             if (ImGuiMCP::Button("Yes, Convert", { 120, 0 })) {
-                // Roda o processo
-                RunConversionProcess();
+
+                std::vector<ConvertedFile> modifiedFiles; // Agora usa o struct com a string
+
+                // Passa a flag exportToZip para evitar alterar os originais se marcada
+                RunConversionProcess(modifiedFiles, exportToZip);
+
+                // Se a opção estiver marcada e arquivos foram modificados, cria o ZIP
+                if (exportToZip && !modifiedFiles.empty()) {
+                    ExportConvertedFilesToZip(modifiedFiles);
+                }
+
                 showConfirmPopup = false;
                 showSuccessMessage = true;
                 ImGuiMCP::CloseCurrentPopup();
