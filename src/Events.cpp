@@ -24,7 +24,7 @@ RE::BSEventNotifyControl Sink::InputListener::ProcessEvent(RE::InputEvent* const
         return RE::BSEventNotifyControl::kContinue;
     }
 
-    bool umaTeclaDeMovimentoMudou = false;
+    bool umaTeclaMudou = false;
 
     for (auto* event = *a_event; event; event = event->next) {
         RE::INPUT_DEVICE device = event->GetDevice();
@@ -44,7 +44,18 @@ RE::BSEventNotifyControl Sink::InputListener::ProcessEvent(RE::InputEvent* const
                     c_down = new_c_down;
                     c_left = new_c_left;
                     c_right = new_c_right;
-                    umaTeclaDeMovimentoMudou = true;
+                    umaTeclaMudou = true;
+                }
+            }
+            else if (thumbstick && thumbstick->IsRight()) {
+                bool new_rs_up = thumbstick->yValue > 0.5f;
+                bool new_rs_down = thumbstick->yValue < -0.5f;
+                bool new_rs_left = thumbstick->xValue < -0.5f;
+                bool new_rs_right = thumbstick->xValue > 0.5f;
+
+                if (rs_up != new_rs_up || rs_down != new_rs_down || rs_left != new_rs_left || rs_right != new_rs_right) {
+                    rs_up = new_rs_up; rs_down = new_rs_down; rs_left = new_rs_left; rs_right = new_rs_right;
+                    umaTeclaMudou = true;
                 }
             }
         }
@@ -57,50 +68,74 @@ RE::BSEventNotifyControl Sink::InputListener::ProcessEvent(RE::InputEvent* const
                 // Só mude para 'pressionado' se a tecla ESTIVER 'down' E nosso estado atual for 'solto'.
                 if (button->IsDown() && !w_pressed) {
                     w_pressed = true;
-                    umaTeclaDeMovimentoMudou = true;
+                    umaTeclaMudou = true;
                 }
                 // Só mude para 'solto' se a tecla ESTIVER 'up' E nosso estado atual for 'pressionado'.
                 else if (button->IsUp() && w_pressed) {
                     w_pressed = false;
-                    umaTeclaDeMovimentoMudou = true;
+                    umaTeclaMudou = true;
                 }
             }
             else if (scanCode == keyLeft) {
                 if (button->IsDown() && !a_pressed) {
                     a_pressed = true;
-                    umaTeclaDeMovimentoMudou = true;
+                    umaTeclaMudou = true;
                 }
                 else if (button->IsUp() && a_pressed) {
                     a_pressed = false;
-                    umaTeclaDeMovimentoMudou = true;
+                    umaTeclaMudou = true;
                 }
             }
             else if (scanCode == keyBack) {
                 if (button->IsDown() && !s_pressed) {
                     s_pressed = true;
-                    umaTeclaDeMovimentoMudou = true;
+                    umaTeclaMudou = true;
                 }
                 else if (button->IsUp() && s_pressed) {
                     s_pressed = false;
-                    umaTeclaDeMovimentoMudou = true;
+                    umaTeclaMudou = true;
                 }
             }
             else if (scanCode == keyRight) {
                 if (button->IsDown() && !d_pressed) {
                     d_pressed = true;
-                    umaTeclaDeMovimentoMudou = true;
+                    umaTeclaMudou = true;
                 }
-                else if (button->IsUp()) {
+                else if (button->IsUp() && d_pressed) {
                     d_pressed = false;
-                    umaTeclaDeMovimentoMudou = true;
+                    umaTeclaMudou = true;
                 }
+            }
+            else if (scanCode == 0x2A) { // Left Shift
+                if (button->IsDown() && !ls_pressed) { ls_pressed = true; umaTeclaMudou = true; }
+                else if (button->IsUp() && ls_pressed) { ls_pressed = false; umaTeclaMudou = true; }
+            }
+            else if (scanCode == 0x10) { // Q
+                if (button->IsDown() && !q_pressed) { q_pressed = true; umaTeclaMudou = true; }
+                else if (button->IsUp() && q_pressed) { q_pressed = false; umaTeclaMudou = true; }
+            }
+            else if (scanCode == 0x12) { // E
+                if (button->IsDown() && !e_pressed) { e_pressed = true; umaTeclaMudou = true; }
+                else if (button->IsUp() && e_pressed) { e_pressed = false; umaTeclaMudou = true; }
+            }
+            else if (scanCode == 0x38) { // Left Alt
+                if (button->IsDown() && !la_pressed) { la_pressed = true; umaTeclaMudou = true; }
+                else if (button->IsUp() && la_pressed) { la_pressed = false; umaTeclaMudou = true; }
+            }
+            else if (scanCode == 0x2C) { // Z
+                if (button->IsDown() && !z_pressed) { z_pressed = true; umaTeclaMudou = true; }
+                else if (button->IsUp() && z_pressed) { z_pressed = false; umaTeclaMudou = true; }
+            }
+            else if (scanCode == 0x2D) { // X
+                if (button->IsDown() && !x_pressed) { x_pressed = true; umaTeclaMudou = true; }
+                else if (button->IsUp() && x_pressed) { x_pressed = false; umaTeclaMudou = true; }
             }
 
 
         }
         int previousDirectionalState = directionalState;
         // Apenas recalcule a direção se uma das nossas teclas de movimento REALMENTE mudou de estado.
-        if (umaTeclaDeMovimentoMudou) {
+        if (umaTeclaMudou) {
             UpdateDirectionalState();
         }
 
@@ -120,8 +155,36 @@ void Sink::InputListener::UpdateDirectionalState()
     bool ESQUERDA = a_pressed || (!w_pressed && !a_pressed && !s_pressed && !d_pressed && c_left);
     bool DIREITA = d_pressed || (!w_pressed && !a_pressed && !s_pressed && !d_pressed && c_right);
 
+    bool out_ls = ls_pressed || rs_left; 
+    bool out_la = la_pressed || rs_right; 
+    bool out_q = q_pressed || rs_down; 
+    bool out_e = e_pressed || rs_up; 
+    bool out_z = z_pressed;  
+    bool out_x = x_pressed;  
+
     // A lógica de decisão permanece a mesma, mas agora usa as variáveis combinadas
-    if (FRENTE && ESQUERDA) {
+    // 1º Prioridade: 3 Teclas pressionadas simultaneamente
+    if (ESQUERDA && FRENTE && DIREITA) {
+        directionalState = 11;
+    }
+    else if (TRAS && FRENTE && DIREITA) {
+        directionalState = 12;
+    }
+    else if (ESQUERDA && TRAS && DIREITA) {
+        directionalState = 13;
+    }
+    else if (TRAS && FRENTE && ESQUERDA) {
+        directionalState = 14; 
+    }
+    // 2º Prioridade: 2 Teclas OPOSTAS pressionadas simultaneamente
+    else if (FRENTE && TRAS) {
+        directionalState = 9;
+    }
+    else if (ESQUERDA && DIREITA) {
+        directionalState = 10;
+    }
+
+    else if (FRENTE && ESQUERDA) {
         directionalState = 8;  // Noroeste
     }
     else if (FRENTE && DIREITA) {
@@ -149,7 +212,16 @@ void Sink::InputListener::UpdateDirectionalState()
         directionalState = 0;  // Parado
     }
 
-    RE::PlayerCharacter::GetSingleton()->SetGraphVariableInt("DirecionalCycleMoveset", directionalState);
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (player) {
+        player->SetGraphVariableInt("DirecionalCycleMoveset", directionalState);
+        player->SetGraphVariableBool("DMKLeftShift", out_ls);
+        player->SetGraphVariableBool("DMKLeftAlt", out_la);
+        player->SetGraphVariableBool("DMKQ", out_q);
+        player->SetGraphVariableBool("DMKE", out_e);
+        player->SetGraphVariableBool("DMKZ", out_z);
+        player->SetGraphVariableBool("DMKX", out_x);
+    }
 
 }
 

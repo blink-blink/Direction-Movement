@@ -30,14 +30,21 @@ namespace OARConverterUI {
     }
 
     // 1. Extração do Direcional (Retorna 0 se não for Keytrace, ou o número da direção 1, 3, 5, 7)
-    int GetKeytraceDirection(const rapidjson::Value& cond) {
-        if (!cond.IsObject()) return 0;
-        if (!cond.HasMember("condition") || !cond["condition"].IsString()) return 0;
+    struct KeytraceInfo {
+        bool isValid = false;
+        bool isDirectional = false;
+        int dirValue = 0;
+        std::string boolVarName = "";
+    };
+
+    KeytraceInfo ParseKeytraceCondition(const rapidjson::Value& cond) {
+        KeytraceInfo info;
+        if (!cond.IsObject()) return info;
+        if (!cond.HasMember("condition") || !cond["condition"].IsString()) return info;
 
         std::string conditionType = cond["condition"].GetString();
-        if (conditionType != "HasMagicEffect") return 0;
+        if (conditionType != "HasMagicEffect") return info;
 
-        // Tenta encontrar o campo do Magic Effect (Variações comuns no OAR)
         const rapidjson::Value* me = nullptr;
         if (cond.HasMember("Magic Effect")) me = &cond["Magic Effect"];
         else if (cond.HasMember("Magic effect")) me = &cond["Magic effect"];
@@ -45,7 +52,7 @@ namespace OARConverterUI {
         else if (cond.HasMember("Effect")) me = &cond["Effect"];
         else if (cond.HasMember("effect")) me = &cond["effect"];
 
-        if (!me || !me->IsObject()) return 0;
+        if (!me || !me->IsObject()) return info;
 
         if (me->HasMember("pluginName") && (*me)["pluginName"].IsString() && me->HasMember("formID")) {
             std::string pluginName = (*me)["pluginName"].GetString();
@@ -62,117 +69,244 @@ namespace OARConverterUI {
                     formID = hexStr;
                 }
 
-                if (formID.find("801") != std::string::npos) return 1; // Frente
-                if (formID.find("803") != std::string::npos) return 5; // Trás
-                if (formID.find("802") != std::string::npos) return 7; // Esquerda
-                if (formID.find("804") != std::string::npos) return 3; // Direita
+                // Tudo em minusculo para garantir que acha o Hex corretamente
+                std::transform(formID.begin(), formID.end(), formID.begin(), ::tolower);
+                info.isValid = true;
+
+                // Direcionais Antigos (Int)
+                if (formID.find("801") != std::string::npos) { info.isDirectional = true; info.dirValue = 1; }
+                else if (formID.find("803") != std::string::npos) { info.isDirectional = true; info.dirValue = 5; }
+                else if (formID.find("802") != std::string::npos) { info.isDirectional = true; info.dirValue = 7; }
+                else if (formID.find("804") != std::string::npos) { info.isDirectional = true; info.dirValue = 3; }
+                // Novas Teclas (Bools)
+                else if (formID.find("81b") != std::string::npos) { info.boolVarName = "DMKLeftShift"; }
+                else if (formID.find("81c") != std::string::npos) { info.boolVarName = "DMKQ"; }
+                else if (formID.find("81d") != std::string::npos) { info.boolVarName = "DMKE"; }
+                else if (formID.find("81e") != std::string::npos) { info.boolVarName = "DMKLeftAlt"; }
+                else if (formID.find("821") != std::string::npos) { info.boolVarName = "DMKZ"; }
+                else if (formID.find("822") != std::string::npos) { info.boolVarName = "DMKX"; }
+                else { info.isValid = false; }
             }
         }
-        return 0;
+        return info;
     }
 
     // 2. Helper para combinar direções em uma Diagonal (Padrão 8-Way)
     int CombineDirections(int dir1, int dir2) {
+        // Diagonais padrão (8-Way)
         if ((dir1 == 1 && dir2 == 3) || (dir1 == 3 && dir2 == 1)) return 2; // Frente-Direita
         if ((dir1 == 5 && dir2 == 3) || (dir1 == 3 && dir2 == 5)) return 4; // Trás-Direita
         if ((dir1 == 5 && dir2 == 7) || (dir1 == 7 && dir2 == 5)) return 6; // Trás-Esquerda
         if ((dir1 == 1 && dir2 == 7) || (dir1 == 7 && dir2 == 1)) return 8; // Frente-Esquerda
+
+        // Teclas Opostas (Novo)
+        if ((dir1 == 1 && dir2 == 5) || (dir1 == 5 && dir2 == 1)) return 9; // Frente-Trás
+        if ((dir1 == 7 && dir2 == 3) || (dir1 == 3 && dir2 == 7)) return 10; // Esquerda-Direita
+
         return dir1; // Retorno de segurança
     }
 
     // 3. Monta a nova estrutura do JSON substituindo a antiga
-    void ReplaceWithNewCondition(rapidjson::Value& cond, int directionValue, bool isNegated, rapidjson::Document::AllocatorType& allocator) {
-        cond.RemoveAllMembers(); // Limpa a condição antiga
+    void ReplaceWithNewCondition(rapidjson::Value& cond, const KeytraceInfo& info, bool isNegated, rapidjson::Document::AllocatorType& allocator) {
+        cond.RemoveAllMembers();
 
         cond.AddMember("condition", "CompareValues", allocator);
-        cond.AddMember("negated", isNegated, allocator); // <--- Agora usa o valor original
+        cond.AddMember("negated", isNegated, allocator);
         cond.AddMember("requiredVersion", "1.0.0.0", allocator);
 
-        rapidjson::Value valA(rapidjson::kObjectType);
-        valA.AddMember("value", directionValue, allocator);
-        cond.AddMember("Value A", valA, allocator);
+        if (info.isDirectional) {
+            rapidjson::Value valA(rapidjson::kObjectType);
+            valA.AddMember("value", info.dirValue, allocator);
+            cond.AddMember("Value A", valA, allocator);
 
-        cond.AddMember("Comparison", "==", allocator);
+            cond.AddMember("Comparison", "==", allocator);
 
-        rapidjson::Value valB(rapidjson::kObjectType);
-        valB.AddMember("graphVariable", "DirecionalCycleMoveset", allocator);
-        valB.AddMember("graphVariableType", "Int", allocator);
-        cond.AddMember("Value B", valB, allocator);
+            rapidjson::Value valB(rapidjson::kObjectType);
+            valB.AddMember("graphVariable", "DirecionalCycleMoveset", allocator);
+            valB.AddMember("graphVariableType", "Int", allocator);
+            cond.AddMember("Value B", valB, allocator);
+        }
+        else {
+            // Se for bool, preenche como "True" / "Bool"
+            rapidjson::Value valA(rapidjson::kObjectType);
+            valA.AddMember("value", 1, allocator);
+            cond.AddMember("Value A", valA, allocator);
+
+            cond.AddMember("Comparison", "==", allocator);
+
+            rapidjson::Value valB(rapidjson::kObjectType);
+            rapidjson::Value stringVarName;
+            stringVarName.SetString(info.boolVarName.c_str(), allocator);
+            valB.AddMember("graphVariable", stringVarName, allocator);
+            valB.AddMember("graphVariableType", "Bool", allocator);
+            cond.AddMember("Value B", valB, allocator);
+        }
     }
 
     // 4. Busca recursivamente, avalia arrays e junta as diagonais se necessário
+// 4. Busca recursivamente, avalia arrays e junta as diagonais se necessário
     void TraverseAndReplace(rapidjson::Value& node, rapidjson::Document::AllocatorType& allocator, int& modifiedCount, bool isAndContext = true) {
-        if (node.IsArray()) {
-            std::vector<rapidjson::SizeType> keytraceIndices;
-            std::vector<int> keytraceDirections;
 
-            // Coleta todas as condições do Keytrace que são "irmãs" neste mesmo array
+        // --- NOVIDADE: Navegação em Objetos (Nós Raiz, AND e OR) ---
+        if (node.IsObject()) {
+            bool currentContextIsAnd = isAndContext;
+
+            // Verifica se este objeto altera o contexto lógico (ex: nó "OR" não pode somar combos)
+            if (node.HasMember("condition") && node["condition"].IsString()) {
+                std::string cType = node["condition"].GetString();
+                if (cType == "OR" || cType == "XOR") {
+                    currentContextIsAnd = false;
+                }
+                else if (cType == "AND") {
+                    currentContextIsAnd = true;
+                }
+            }
+
+            // Percorre todos os membros do Objeto procurando chaves que contenham Arrays
+            for (auto itr = node.MemberBegin(); itr != node.MemberEnd(); ++itr) {
+                // Se o membro for a lista de condições ("conditions" ou "Conditions")
+                if (itr->name == "conditions" || itr->name == "Conditions") {
+                    TraverseAndReplace(itr->value, allocator, modifiedCount, currentContextIsAnd);
+                }
+                else {
+                    // Repassa a recursividade para as outras chaves do objeto
+                    TraverseAndReplace(itr->value, allocator, modifiedCount, isAndContext);
+                }
+            }
+        }
+
+        // --- CÓDIGO DE ARRAYS (Onde a conversão realmente acontece) ---
+        else if (node.IsArray()) {
+            std::vector<rapidjson::SizeType> positiveDirIndices;
+            std::vector<int> positiveDirValues;
+
+            std::vector<rapidjson::SizeType> negatedDirIndices;
+            std::vector<int> negatedDirValues;
+
+            std::vector<rapidjson::SizeType> indicesToErase;
+
+            // Etapa A: Separar Direcionais Positivos e Negados
             for (rapidjson::SizeType i = 0; i < node.Size(); i++) {
-                int dir = GetKeytraceDirection(node[i]);
-                if (dir > 0) {
-                    keytraceIndices.push_back(i);
-                    keytraceDirections.push_back(dir);
-                }
-            }
-
-            // Se acharmos exatamente 2 direções num contexto "AND", formamos uma diagonal
-            if (isAndContext && keytraceIndices.size() == 2) {
-                int combinedDir = CombineDirections(keytraceDirections[0], keytraceDirections[1]);
-                SKSE::log::trace("  [DEBUG] DIAGONAL DETECTADA: Direcoes ({}, {}) combinadas para -> {}", keytraceDirections[0], keytraceDirections[1], combinedDir);
-
-                // Verifica se a primeira condição da diagonal era negada
-                bool isNegated = false;
-                if (node[keytraceIndices[0]].HasMember("negated") && node[keytraceIndices[0]]["negated"].IsBool()) {
-                    isNegated = node[keytraceIndices[0]]["negated"].GetBool();
-                }
-
-                // Substitui o primeiro bloco pela variável diagonal mantendo o negated
-                ReplaceWithNewCondition(node[keytraceIndices[0]], combinedDir, isNegated, allocator);
-                modifiedCount++;
-
-                // APAGA o segundo bloco para que não haja conflito
-                node.Erase(node.Begin() + keytraceIndices[1]);
-            }
-            else {
-                // Caso seja contexto OR ou seja apenas 1 direção individual, substitui normal
-                for (size_t i = 0; i < keytraceIndices.size(); i++) {
-
-                    // Extrai a flag "negated" da condição individual antes de a alterar
+                KeytraceInfo info = ParseKeytraceCondition(node[i]);
+                if (info.isValid && info.isDirectional) {
                     bool isNegated = false;
-                    if (node[keytraceIndices[i]].HasMember("negated") && node[keytraceIndices[i]]["negated"].IsBool()) {
-                        isNegated = node[keytraceIndices[i]]["negated"].GetBool();
+                    if (node[i].HasMember("negated") && node[i]["negated"].IsBool()) {
+                        isNegated = node[i]["negated"].GetBool();
                     }
 
-                    ReplaceWithNewCondition(node[keytraceIndices[i]], keytraceDirections[i], isNegated, allocator);
+                    if (isNegated) {
+                        negatedDirIndices.push_back(i);
+                        negatedDirValues.push_back(info.dirValue);
+                    }
+                    else {
+                        positiveDirIndices.push_back(i);
+                        positiveDirValues.push_back(info.dirValue);
+                    }
+                }
+            }
+
+            // Etapa B: Filtrar Duplicatas e Agrupar APENAS os Positivos
+            std::vector<int> uniqueDirValues;
+            std::vector<rapidjson::SizeType> uniqueDirIndices;
+
+            // Limpa modders que colocaram a mesma direção duas vezes no arquivo
+            for (size_t i = 0; i < positiveDirIndices.size(); i++) {
+                int val = positiveDirValues[i];
+                if (std::find(uniqueDirValues.begin(), uniqueDirValues.end(), val) == uniqueDirValues.end()) {
+                    uniqueDirValues.push_back(val);
+                    uniqueDirIndices.push_back(positiveDirIndices[i]);
+                }
+                else {
+                    // É uma duplicata inútil, já marcamos para deletar do JSON
+                    indicesToErase.push_back(positiveDirIndices[i]);
+                }
+            }
+
+            bool grouped = false; // Flag de agrupamento
+
+            if (isAndContext && uniqueDirValues.size() >= 2) {
+                if (uniqueDirValues.size() == 3) {
+                    int sum = uniqueDirValues[0] + uniqueDirValues[1] + uniqueDirValues[2];
+                    int combinedDir = 0;
+
+                    if (sum == 11) combinedDir = 11;      // Frente(1) + Esquerda(7) + Direita(3)
+                    else if (sum == 9) combinedDir = 12;  // Frente(1) + Trás(5) + Direita(3)
+                    else if (sum == 15) combinedDir = 13; // Trás(5) + Esquerda(7) + Direita(3)
+                    else if (sum == 13) combinedDir = 14; // Frente(1) + Trás(5) + Esquerda(7)
+
+                    if (combinedDir != 0) {
+                        KeytraceInfo comboInfo;
+                        comboInfo.isDirectional = true;
+                        comboInfo.dirValue = combinedDir;
+
+                        ReplaceWithNewCondition(node[uniqueDirIndices[0]], comboInfo, false, allocator);
+                        modifiedCount++;
+
+                        indicesToErase.push_back(uniqueDirIndices[1]);
+                        indicesToErase.push_back(uniqueDirIndices[2]);
+                        grouped = true;
+                    }
+                }
+                else if (uniqueDirValues.size() == 2) {
+                    int combinedDir = CombineDirections(uniqueDirValues[0], uniqueDirValues[1]);
+
+                    KeytraceInfo comboInfo;
+                    comboInfo.isDirectional = true;
+                    comboInfo.dirValue = combinedDir;
+
+                    ReplaceWithNewCondition(node[uniqueDirIndices[0]], comboInfo, false, allocator);
+                    modifiedCount++;
+
+                    indicesToErase.push_back(uniqueDirIndices[1]);
+                    grouped = true;
+                }
+            }
+
+            // Fallback: Se não agrupou, ou é só uma tecla, converte individualmente
+            if (!grouped && !uniqueDirIndices.empty()) {
+                for (size_t i = 0; i < uniqueDirIndices.size(); i++) {
+                    KeytraceInfo dInfo;
+                    dInfo.isDirectional = true;
+                    dInfo.dirValue = uniqueDirValues[i];
+                    ReplaceWithNewCondition(node[uniqueDirIndices[i]], dInfo, false, allocator);
                     modifiedCount++;
                 }
             }
 
-            // Continua a recursividade em todos os elementos restantes do array
+            // Etapa C: Processar os NEGADOS sempre individualmente
+            for (size_t i = 0; i < negatedDirIndices.size(); i++) {
+                KeytraceInfo dInfo;
+                dInfo.isDirectional = true;
+                dInfo.dirValue = negatedDirValues[i];
+                ReplaceWithNewCondition(node[negatedDirIndices[i]], dInfo, true, allocator);
+                modifiedCount++;
+            }
+
+            // Etapa D: Processar as Chaves Adicionais (Esquiva/Ataque etc)
             for (rapidjson::SizeType i = 0; i < node.Size(); i++) {
+                if (std::find(indicesToErase.begin(), indicesToErase.end(), i) != indicesToErase.end()) continue;
+
+                KeytraceInfo info = ParseKeytraceCondition(node[i]);
+                if (info.isValid && !info.isDirectional) {
+                    bool isNegated = false;
+                    if (node[i].HasMember("negated") && node[i]["negated"].IsBool()) {
+                        isNegated = node[i]["negated"].GetBool();
+                    }
+                    ReplaceWithNewCondition(node[i], info, isNegated, allocator);
+                    modifiedCount++;
+                }
+            }
+
+            // Etapa E: Continuar recursividade nos filhos restantes
+            for (rapidjson::SizeType i = 0; i < node.Size(); i++) {
+                if (std::find(indicesToErase.begin(), indicesToErase.end(), i) != indicesToErase.end()) continue;
                 TraverseAndReplace(node[i], allocator, modifiedCount, isAndContext);
             }
-        }
-        else if (node.IsObject()) {
-            bool nextContextIsAnd = isAndContext;
 
-            if (node.HasMember("condition") && node["condition"].IsString()) {
-                std::string condType = node["condition"].GetString();
-                if (condType == "OR") {
-                    nextContextIsAnd = false;
-                }
-                else if (condType == "AND") {
-                    nextContextIsAnd = true;
-                }
-            }
-
-            for (auto itr = node.MemberBegin(); itr != node.MemberEnd(); ++itr) {
-                if (std::string(itr->name.GetString()) == "conditions") {
-                    TraverseAndReplace(itr->value, allocator, modifiedCount, true);
-                }
-                else {
-                    TraverseAndReplace(itr->value, allocator, modifiedCount, nextContextIsAnd);
-                }
+            // Etapa F: Apagar do JSON as redundâncias e duplicatas
+            std::sort(indicesToErase.rbegin(), indicesToErase.rend());
+            for (rapidjson::SizeType idx : indicesToErase) {
+                node.Erase(node.Begin() + idx);
             }
         }
     }

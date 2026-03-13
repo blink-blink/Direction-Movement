@@ -1,4 +1,18 @@
 namespace Sink {
+    // Variaveis de estado globais de input (para nao precisar mexer no seu Events.h)
+    static bool ls_pressed = false; // Left Shift (0x2A)
+    static bool q_pressed = false;  // Q (0x10)
+    static bool e_pressed = false;  // E (0x12)
+    static bool la_pressed = false; // Left Alt (0x38)
+    static bool z_pressed = false;  // Z (0x2C)
+    static bool x_pressed = false;  // X (0x2D)
+
+    // Variaveis do Right Thumbstick
+    static bool rs_up = false;
+    static bool rs_down = false;
+    static bool rs_left = false;
+    static bool rs_right = false;
+
     inline uint32_t keyForward = 0x11;
     inline uint32_t keyBack = 0x1F;
     inline uint32_t keyLeft = 0x1E;
@@ -11,8 +25,6 @@ namespace Sink {
             static InputListener singleton;
             return &singleton;
         }
-
-
 
         static inline RE::INPUT_DEVICE lastUsedDevice = RE::INPUT_DEVICE::kKeyboard;
         // A função que processa os eventos de input do jogo
